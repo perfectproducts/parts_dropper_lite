@@ -1,6 +1,6 @@
-# floorplan generator lite 
+# synctwin parts dropper lite 
 
-easily create floorplans from bitmaps
+create filled material containers
 
 get the full version from the synctwin portal from www.synctwin.ai 
 
