@@ -32,7 +32,9 @@ class PartDropper:
         
     def set_part_usd(self, usd_path):
         self.part_path = usd_path
-        self.part_size = self.bounds(usd_path).GetSize()
+        self.part_bounds= self.bounds(usd_path)
+        self.part_size = self.part_bounds.GetSize()
+
     
     def create_ground_plane(self, stage):
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -77,10 +79,10 @@ class PartDropper:
     def add_part(self, stage: Usd.Stage):
         self.part_count += 1 
         
-        part_prim = stage.DefinePrim(f"/World/Box/Parts/Part_{self.part_count}", "Xform")
+        part_prim = stage.DefinePrim(f"/World/PartDropper/Parts/Part_{self.part_count}", "Xform")
         part_prim.GetReferences().AddReference(self.part_path)
         
         UsdPhysics.CollisionAPI.Apply(part_prim) 
         physicsAPI = UsdPhysics.RigidBodyAPI.Apply(part_prim)        
-        
-        UsdGeom.Xformable(part_prim).AddTranslateOp().Set(Gf.Vec3f(0, 0, 50))
+        c = self.part_bounds.GetMidpoint()
+        UsdGeom.Xformable(part_prim).AddTranslateOp().Set(Gf.Vec3f(-c[0], -c[1], 50))

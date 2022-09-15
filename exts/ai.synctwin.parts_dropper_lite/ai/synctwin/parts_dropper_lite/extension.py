@@ -19,13 +19,13 @@ class PartsDropperLite(omni.ext.IExt):
     ]
 
     def _vec_to_str(self, v):
-        return f"x={v[0]:.2f} y={v[1]:.2f} z={v[2]:.2f}"
+        return f"({v[0]:.2f} / {v[1]:.2f} / {v[2]:.2f})"
 
     def set_container_usd(self, path):
         self._dropper.set_container_usd(path)
         self._container_label.text = os.path.split(path)[1]
-        self._container_size_label.text = f"Size: {self._vec_to_str(self._dropper.container_size)}"
-        self._container_button.enabled = self._dropper.can_create_container()
+        self._container_size_label.text = self._vec_to_str(self._dropper.container_size)
+        
         if self._dropper.can_create_container():
             self.create_container()
         
@@ -74,7 +74,7 @@ class PartsDropperLite(omni.ext.IExt):
         dialog.show()
     
     def on_startup(self, ext_id):
-        self._window = ui.Window("SyncTwin Parts Dropper Lite", width=300, height=400)
+        self._window = ui.Window("SyncTwin Parts Dropper Lite", width=300, height=500)
         self._dropper = PartDropper()
         self._physx = omni.physx.get_physx_interface()
         self._app = omni.kit.app.get_app_interface()
@@ -85,36 +85,40 @@ class PartsDropperLite(omni.ext.IExt):
         self._is_dropping = False 
         with self._window.frame:
             with ui.VStack():
-                ui.Button("create scene", clicked_fn=lambda: self.create_scene())
-                ui.Label("Container:")
-                with ui.HStack():                    
-                    self._container_label = ui.Label("[select container]", height=30)                    
-                    ui.Button(
-                            "...", 
+                ui.Button("create scene", height=30,
+                            clicked_fn=lambda: self.create_scene())
+                ui.Button(
+                            "select container", 
                             height=30,
-                            width=30,
-                            tooltip="select container USD...",
+                            tooltip="select container USD path...",
                             clicked_fn=lambda: self.select_container()
                         )
-                self._container_size_label = ui.Label("[container size]", height=30)                        
-                self._container_button = ui.Button("create container", clicked_fn=lambda: self.create_container(), enabled=False)
-
-                ui.Label("Part:")
-                with ui.HStack():                    
-                    self._part_label = ui.Label("[select part]", height=30)
-                    
-                    ui.Button(
-                            "...",
+                ui.Button(
+                            "select part",
                             height=30,
-                            width=30,
-                            tooltip="select part USD...",
+                            tooltip="select part USD path...",
                             clicked_fn=lambda: self.select_part()
                         )                        
-                self._part_size_label = ui.Label("[part size]", height=30)                        
-                ui.Label("Count:")
-                self._countModel = ui.IntField().model
-                self._countModel.set_value(10)
-                self._parts_button = ui.Button("create parts", clicked_fn=lambda: self.create_parts(), enabled=False)
+                ui.Label("Container:")
+                with ui.HStack():
+                    self._container_label = ui.Label("-", height=30)                                        
+                    self._container_size_label = ui.Label("", height=30)                        
+
+                ui.Label("Part:")
+                with ui.HStack():
+                    self._part_label = ui.Label("-", height=30)                                    
+                    self._part_size_label = ui.Label("", height=30)                        
+
+                ui.Label("Target Count:")                
+                
+                field = ui.IntField(height=30) 
+                self._countModel = field.model
+                self._countModel.set_value(10)                    
+                with ui.HStack():
+                    ui.Label("Parts Dropped:")
+                    self._parts_dropped_label = ui.Label("0")
+                self._parts_button = ui.Button("drop parts", 
+                    clicked_fn=lambda: self.create_parts(), enabled=False, height=50)
 
         # timeline 
         self._timeline = omni.timeline.get_timeline_interface()
@@ -151,16 +155,20 @@ class PartsDropperLite(omni.ext.IExt):
         stage = context.get_stage()
         self._last_drop_time_ms = self._app.get_time_since_start_ms()
         self._dropper.add_part(stage)
+        
+
+    def start_drop(self):
         print("create parts")
         self._timeline.play()
         self._is_dropping= True          
 
-        
     def _on_timeline_event(self, e):
         """ Event handler for timeline events"""
         print("timeline event")
         if e.type == int(omni.timeline.TimelineEventType.PLAY):
             print("PLAY")
+        else:
+            self._is_dropping = False
 
     def _on_app_update_event(self, evt):
         """ Event handler app update events occuring every frame"""
