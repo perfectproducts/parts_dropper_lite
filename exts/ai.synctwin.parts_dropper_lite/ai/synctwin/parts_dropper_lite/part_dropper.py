@@ -234,9 +234,6 @@ class PartDropper:
             xf = UsdGeom.Xformable(part_prim)
             xf.ClearXformOpOrder()
             xf.AddTransformOp().Set(mat4)
-            
-        print(f"NUM {num_parts}")
-        
         
         stage.SetDefaultPrim(stage.GetPrimAtPath(defaultPrimPath))
         stage.GetRootLayer().Save()
