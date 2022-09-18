@@ -20,73 +20,18 @@ class PartsDropperLite(omni.ext.IExt):
 
     def _vec_to_str(self, v):
         return f"({v[0]:.2f} / {v[1]:.2f} / {v[2]:.2f})"
-
-    def set_container_usd(self, path):
-        self._dropper.set_container_usd(path)
-        self._container_label.text = os.path.split(path)[1]
-        self._container_size_label.text = self._vec_to_str(self._dropper.container_size)
         
-        if self._dropper.can_create_container():
-            self.create_container()
-        
-
-    def on_container_file_selected(self, dialog, dirname: str, filename: str):        
-        print(f"selected {filename}")
-        self.set_container_usd(f"{dirname}/{filename}")
-        dialog.hide()
-
-    
-    
-    def select_container(self):
-        dialog = FilePickerDialog(
-            "select container geometry",
-            allow_multi_selection=False,
-            apply_button_label="select file",
-            click_apply_handler=lambda filename, dirname: self.on_container_file_selected(dialog, dirname, filename),
-            file_extension_options=DEFAULT_FILE_EXTENSION_TYPES
-        )
-        dialog.show()
-
-
-    def set_part_usd(self, path):
-        self._dropper.set_part_usd(path)        
-        self._part_label.text = os.path.split(path)[1]
-        self._part_size_label.text = f"Size: {self._vec_to_str(self._dropper.part_size)}"
-        self._parts_button.enabled = self._dropper.can_create_parts()
-        if self._dropper.can_create_parts():
-            self.create_parts()
-       
-
-    def on_part_file_selected(self, dialog, dirname: str, filename: str):        
-        print(f"selected {filename}")
-        self.set_part_usd(f"{dirname}/{filename}")
-
-        dialog.hide()    
-
-    def select_part(self):
-        dialog = FilePickerDialog(
-            "select part geometry",
-            allow_multi_selection=False,
-            apply_button_label="select file",
-            click_apply_handler=lambda filename, dirname: self.on_part_file_selected(dialog, dirname, filename),
-            file_extension_options = DEFAULT_FILE_EXTENSION_TYPES
-        )
-        dialog.show()
     
     def on_startup(self, ext_id):
         self._window = ui.Window("SyncTwin Parts Dropper Lite", width=300, height=500)
         self._dropper = PartDropper()
-        self._physx = omni.physx.get_physx_interface()
+        
         self._app = omni.kit.app.get_app_interface()
-        self._drop_interval_ms = 500
-        #self._physx_cooking = omni.physx.get_physx_cooking_interface()
-        #self._physx_authoring = omni.physx.get_physx_authoring_interface()
 
-        self._is_dropping = False 
         with self._window.frame:
             with ui.VStack():
                 ui.Button("create scene", height=30,
-                            clicked_fn=lambda: self.create_scene())
+                            clicked_fn=lambda: self.on_create_scene_clicked())
                 ui.Button(
                             "select container", 
                             height=30,
@@ -112,15 +57,15 @@ class PartsDropperLite(omni.ext.IExt):
                 ui.Label("Target Count:")                
                 
                 field = ui.IntField(height=30) 
-                self._countModel = field.model
-                self._countModel.set_value(10)                    
+                self._targetCountModel = field.model
+                
                 with ui.HStack():
                     ui.Label("Parts Dropped:")
                     self._parts_dropped_label = ui.Label("0")
                 self._parts_button = ui.Button("drop parts", 
-                    clicked_fn=lambda: self.create_parts(), enabled=False, height=50)
+                    clicked_fn=lambda: self.on_parts_button_clicked(), enabled=False, height=50)
 
-        # timeline 
+        # timeline event subscription (play/stop etc)
         self._timeline = omni.timeline.get_timeline_interface()
         timeline_stream = self._timeline.get_timeline_event_stream()
         self._timeline_event_sub = timeline_stream.create_subscription_to_pop(self._on_timeline_event)                
@@ -129,58 +74,140 @@ class PartsDropperLite(omni.ext.IExt):
         self._app = omni.kit.app.get_app_interface()
         self._app_update_sub = self._app.get_update_event_stream().create_subscription_to_pop(
             self._on_app_update_event, name="part_dropper._on_app_update_event"
-        )                
+        )   
+        # setup open close subscription 
+        self._usd_context = omni.usd.get_context()
+        self._sub_stage_event = self._usd_context.get_stage_event_stream().create_subscription_to_pop(
+                self._on_stage_event
+            )     
+        self.set_dropper_stage_from_context()
+        self.refresh()        
                     
     def on_shutdown(self):
         print("[ai.synctwin.parts_dropper_lite] MyExtension shutdown")
         self._timeline_event_sub = None
 
-    def create_scene(self):
-        context = omni.usd.get_context()
-        context.new_stage()
-        stage = context.get_stage()
-        self._dropper.create_ground_plane(stage)
 
-    def create_container(self):
-        context = omni.usd.get_context()
-        stage = context.get_stage()
-        self._dropper.create_container(stage)
+    def refresh(self):
+        if self._dropper.has_container():
+            self._container_label.text = os.path.split(self._dropper.container_path)[1]
+            self._container_size_label.text = self._vec_to_str(self._dropper.container_size)
+        else:
+            self._container_label.text = "-" 
+            self._container_size_label.text = ""
 
-    def create_parts(self):
-        if self._is_dropping:
-            self._is_dropping = False
-            self._timeline.stop()
-            return 
-        context = omni.usd.get_context()
-        stage = context.get_stage()
-        self._last_drop_time_ms = self._app.get_time_since_start_ms()
-        self._dropper.add_part(stage)
+        if self._dropper.has_part():
+            self._part_label.text = os.path.split(self._dropper.part_path)[1]
+            self._part_size_label.text = self._vec_to_str(self._dropper.part_size)
+        else:
+            self._part_label.text = "-" 
+            self._part_size_label.text = ""
+
+
+        self._parts_button.enabled = self._dropper.has_part() and self._dropper.has_container()
+        partsbut_text = "drop"
+        if self._dropper.is_dropping:
+            partsbut_text = "stop"
+        self._parts_button.text = partsbut_text
+        self._targetCountModel.set_value(self._dropper.target_part_count)
+        self.refresh_parts_label()
         
 
-    def start_drop(self):
-        print("create parts")
-        self._timeline.play()
-        self._is_dropping= True          
+    def on_container_file_selected(self, dialog, dirname: str, filename: str):        
+        print(f"selected {filename}")
+        self._dropper.set_container_usd(f"{dirname}/{filename}")
+        dialog.hide()
+        self.refresh()
+
+    
+    
+    def select_container(self):
+        dialog = FilePickerDialog(
+            "select container geometry",
+            allow_multi_selection=False,
+            apply_button_label="select file",
+            click_apply_handler=lambda filename, dirname: self.on_container_file_selected(dialog, dirname, filename),
+            file_extension_options=DEFAULT_FILE_EXTENSION_TYPES
+        )
+        dialog.show()
+
+
+        
+       
+
+    def on_part_file_selected(self, dialog, dirname: str, filename: str):        
+        print(f"selected {filename}")        
+        self._dropper.set_part_usd(f"{dirname}/{filename}")        
+        dialog.hide()    
+        self.refresh()
+
+    def select_part(self):
+        dialog = FilePickerDialog(
+            "select part geometry",
+            allow_multi_selection=False,
+            apply_button_label="select file",
+            click_apply_handler=lambda filename, dirname: self.on_part_file_selected(dialog, dirname, filename),
+            file_extension_options = DEFAULT_FILE_EXTENSION_TYPES
+        )
+        dialog.show()
+    
+    
+    def on_create_scene_clicked(self):
+        self._usd_context.new_stage()
+        self._dropper.create_ground_plane()
+
+    def on_parts_button_clicked(self):
+        if self._dropper.is_dropping:
+            self._timeline.stop()
+            self._dropper.stop_dropping()
+        else:
+            self._timeline.play()
+            self._dropper.set_target_count(self._targetCountModel.get_value_as_int())
+            self._dropper.start_dropping()
+    
+    def refresh_parts_label(self):
+        self._parts_dropped_label.text = str(self._dropper.part_count)
 
     def _on_timeline_event(self, e):
         """ Event handler for timeline events"""
-        print("timeline event")
+        #print("timeline event")
         if e.type == int(omni.timeline.TimelineEventType.PLAY):
             print("PLAY")
-        else:
-            self._is_dropping = False
+        elif e.type == int(omni.timeline.TimelineEventType.STOP):
+            self._dropper.clear()
+        #elif e.type == int(omni.timeline.TimelineEventType.FRAME):
+
 
     def _on_app_update_event(self, evt):
-        """ Event handler app update events occuring every frame"""
-        #print("app event")
-        if not self._is_dropping:
-            return 
-        now_ms = self._app.get_time_since_start_ms()
-        elapsed_ms = now_ms - self._last_drop_time_ms
-        #print("elapsed: {elapsed_s}")
-        if elapsed_ms > self._drop_interval_ms:
-            context = omni.usd.get_context()
-            stage = context.get_stage()
-            self._dropper.add_part(stage)
-            self._last_drop_time_s = now_ms
-    
+        """ Event handler app update events occuring every frame"""        
+        result = self._dropper.update(self._app.get_time_since_start_ms())
+        if result==PartDropper.UpdateResult.PART_DROPPED:
+            self.refresh_parts_label()
+        elif result == PartDropper.UpdateResult.TARGET_PARTS_REACHED:
+            self.refresh()
+        elif result == PartDropper.UpdateResult.PART_MISSED:
+            self.refresh()
+        
+
+    def clear(self):
+        self._dropper.clear()
+        self.refresh()
+
+    def set_dropper_stage_from_context(self):
+        self._dropper.set_stage(self._usd_context.get_stage())
+
+    def _on_stage_event(self, event):
+        
+        if event.type == int(omni.usd.StageEventType.SELECTION_CHANGED):
+            # not used 
+            pass
+
+        elif event.type == int(omni.usd.StageEventType.CLOSED):
+            print("CLOSED.")
+            self.clear()
+
+        elif event.type == int(omni.usd.StageEventType.OPENED):
+            print("OPENED.")
+            self.set_dropper_stage_from_context()
+        else:
+            print(f"STATE  {event.type}")
