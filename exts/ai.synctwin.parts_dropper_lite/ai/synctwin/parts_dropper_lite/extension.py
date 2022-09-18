@@ -1,3 +1,5 @@
+from dataclasses import is_dataclass
+import carb
 import omni.ext
 from omni.kit.window.file_exporter.extension import DEFAULT_FILE_EXTENSION_TYPES
 import omni.ui as ui
@@ -7,7 +9,7 @@ from omni.kit.widget.filebrowser import FileBrowserItem
 from .part_dropper import PartDropper
 import omni.physx
 import os 
-
+import omni.kit.commands
 # Any class derived from `omni.ext.IExt` in top level module (defined in `python.modules` of `extension.toml`) will be
 # instantiated when extension gets enabled and `on_startup(ext_id)` will be called. Later when extension gets disabled
 # on_shutdown() is called.
@@ -17,6 +19,7 @@ class PartsDropperLite(omni.ext.IExt):
     ("*.usd*", usd.readable_usd_file_exts_str()),
     ("*", "All files"),
     ]
+    SETTINGS_PHYSICS_RESET_ON_STOP = '/persistent/physics/resetOnStop'
 
     def _vec_to_str(self, v):
         return f"({v[0]:.2f} / {v[1]:.2f} / {v[2]:.2f})"
@@ -25,8 +28,12 @@ class PartsDropperLite(omni.ext.IExt):
     def on_startup(self, ext_id):
         self._window = ui.Window("SyncTwin Parts Dropper Lite", width=300, height=500)
         self._dropper = PartDropper()
+
+        self._settings = carb.settings.get_settings()
+        self._physics_reset_enabled = self._settings.get_as_bool(self.SETTINGS_PHYSICS_RESET_ON_STOP)
         
-        self._app = omni.kit.app.get_app_interface()
+        self._settings.set(self.SETTINGS_PHYSICS_RESET_ON_STOP, False)
+
 
         with self._window.frame:
             with ui.VStack():
@@ -45,25 +52,41 @@ class PartsDropperLite(omni.ext.IExt):
                             clicked_fn=lambda: self.select_part()
                         )                        
                 ui.Label("Container:")
-                with ui.HStack():
-                    self._container_label = ui.Label("-", height=30)                                        
-                    self._container_size_label = ui.Label("", height=30)                        
+                
+                self._container_label = ui.Label("-", height=30)                                        
+                self._container_size_label = ui.Label("", height=30)                        
 
-                ui.Label("Part:")
-                with ui.HStack():
-                    self._part_label = ui.Label("-", height=30)                                    
-                    self._part_size_label = ui.Label("", height=30)                        
+                ui.Label("Part:")                
+                
+                self._part_label = ui.Label("-", height=30)                                        
+                self._part_size_label = ui.Label("", height=30)
 
+                ui.Label("Scale:")
+                with ui.HStack():                                        
+                    self._scale_label = ui.Label("", height=30)
+                    ui.Button("0.001", clicked_fn=lambda:self.set_part_scale(0.001), height=15, width=25)
+                    ui.Button("0.01", clicked_fn=lambda:self.set_part_scale(0.01), height=15, width=25)
+                    ui.Button("0.1", clicked_fn=lambda:self.set_part_scale(0.1), height=15, width=25)
+                    ui.Button("0.5", clicked_fn=lambda:self.set_part_scale(0.5), height=15, width=25)
+                    ui.Button("1", clicked_fn=lambda:self.set_part_scale(1), height=15, width=25)
+                    ui.Button("2", clicked_fn=lambda:self.set_part_scale(2), height=15, width=25)                    
+                    ui.Button("10", clicked_fn=lambda:self.set_part_scale(10), height=15, width=25)
+                    ui.Button("100", clicked_fn=lambda:self.set_part_scale(100), height=15, width=25)
+                    ui.Button("1000", clicked_fn=lambda:self.set_part_scale(1000), height=15, width=25)
+                        
+                
+                
                 ui.Label("Target Count:")                
                 
                 field = ui.IntField(height=30) 
                 self._targetCountModel = field.model
+                self._targetCountModel.set_value(self._dropper.target_part_count)
                 
                 with ui.HStack():
                     ui.Label("Parts Dropped:")
                     self._parts_dropped_label = ui.Label("0")
-                self._parts_button = ui.Button("drop parts", 
-                    clicked_fn=lambda: self.on_parts_button_clicked(), enabled=False, height=50)
+                self._parts_button = ui.Button("drop",  clicked_fn=lambda: self.on_parts_button_clicked(), enabled=False, height=50)
+                self._export_button = ui.Button("export", clicked_fn=lambda: self.on_export_button_clicked(), height=30)
 
         # timeline event subscription (play/stop etc)
         self._timeline = omni.timeline.get_timeline_interface()
@@ -82,7 +105,15 @@ class PartsDropperLite(omni.ext.IExt):
             )     
         self.set_dropper_stage_from_context()
         self.refresh()        
-                    
+
+    def set_part_scale(self, v):
+        self._dropper.set_part_scale_factor(v)
+        self.refresh()
+
+    def multiply_part_scale(self, v):
+        self.set_part_scale(self._dropper.part_scale_factor*v)
+        
+
     def on_shutdown(self):
         print("[ai.synctwin.parts_dropper_lite] MyExtension shutdown")
         self._timeline_event_sub = None
@@ -105,11 +136,12 @@ class PartsDropperLite(omni.ext.IExt):
 
 
         self._parts_button.enabled = self._dropper.has_part() and self._dropper.has_container()
-        partsbut_text = "drop"
         if self._dropper.is_dropping:
-            partsbut_text = "stop"
-        self._parts_button.text = partsbut_text
-        self._targetCountModel.set_value(self._dropper.target_part_count)
+            self._parts_button.text ="stop"
+        else:
+            self._parts_button.text ="drop"
+        
+        self._scale_label.text = str(self._dropper.part_scale_factor)
         self.refresh_parts_label()
         
 
@@ -119,7 +151,15 @@ class PartsDropperLite(omni.ext.IExt):
         dialog.hide()
         self.refresh()
 
-    
+    def on_export_button_clicked(self):
+        dialog = FilePickerDialog(
+            "select export geometry",
+            allow_multi_selection=False,
+            apply_button_label="select file",
+            click_apply_handler=lambda filename, dirname: self.on_export_file_selected(dialog, dirname, filename),
+            file_extension_options=DEFAULT_FILE_EXTENSION_TYPES
+        )
+        dialog.show()
     
     def select_container(self):
         dialog = FilePickerDialog(
@@ -133,7 +173,10 @@ class PartsDropperLite(omni.ext.IExt):
 
 
         
-       
+    def on_export_file_selected(self, dialog, dirname: str, filename: str):
+        self._dropper.export_filled_container(f"{dirname}/{filename}")
+        dialog.hide()    
+        self.refresh()
 
     def on_part_file_selected(self, dialog, dirname: str, filename: str):        
         print(f"selected {filename}")        
@@ -156,14 +199,17 @@ class PartsDropperLite(omni.ext.IExt):
         self._usd_context.new_stage()
         self._dropper.create_ground_plane()
 
-    def on_parts_button_clicked(self):
+    def on_parts_button_clicked(self):        
         if self._dropper.is_dropping:
-            self._timeline.stop()
+            self._timeline.stop()    
             self._dropper.stop_dropping()
+            
         else:
             self._timeline.play()
             self._dropper.set_target_count(self._targetCountModel.get_value_as_int())
             self._dropper.start_dropping()
+        self.refresh()
+            
     
     def refresh_parts_label(self):
         self._parts_dropped_label.text = str(self._dropper.part_count)
@@ -173,8 +219,8 @@ class PartsDropperLite(omni.ext.IExt):
         #print("timeline event")
         if e.type == int(omni.timeline.TimelineEventType.PLAY):
             print("PLAY")
-        elif e.type == int(omni.timeline.TimelineEventType.STOP):
-            self._dropper.clear()
+        #elif e.type == int(omni.timeline.TimelineEventType.STOP):
+        #    self._dropper.()
         #elif e.type == int(omni.timeline.TimelineEventType.FRAME):
 
 
@@ -185,12 +231,11 @@ class PartsDropperLite(omni.ext.IExt):
             self.refresh_parts_label()
         elif result == PartDropper.UpdateResult.TARGET_PARTS_REACHED:
             self.refresh()
-        elif result == PartDropper.UpdateResult.PART_MISSED:
-            self.refresh()
+        
         
 
     def clear(self):
-        self._dropper.clear()
+        self._dropper.reset()
         self.refresh()
 
     def set_dropper_stage_from_context(self):
@@ -211,3 +256,5 @@ class PartsDropperLite(omni.ext.IExt):
             self.set_dropper_stage_from_context()
         else:
             print(f"STATE  {event.type}")
+
+    
